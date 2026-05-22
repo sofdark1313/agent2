@@ -60,7 +60,8 @@ ALLOWED_CSS = [
     "padding",
     "padding-left",
     "text-align",
-    "word-break",
+    "letter-spacing",
+    "width",
 ]
 
 
@@ -82,13 +83,17 @@ def apply_wechat_style(html: str) -> str:
     <style>
       .wx-article {{ color: #1f2933; font-size: 16px; line-height: 1.85; }}
       .wx-article h1 {{ font-size: 24px; line-height: 1.35; margin: 0 0 18px; }}
-      .wx-article h2 {{ font-size: 20px; margin: 28px 0 12px; border-left: 4px solid #1f7a5a; padding-left: 10px; }}
-      .wx-article h3 {{ font-size: 18px; margin: 24px 0 10px; }}
+      .wx-article h2 {{ font-size: 20px; margin: 30px 0 14px; border-left: 4px solid #1f7a5a; padding-left: 10px; line-height: 1.45; }}
+      .wx-article h3 {{ font-size: 18px; margin: 24px 0 10px; line-height: 1.5; }}
       .wx-article p {{ margin: 0 0 16px; }}
       .wx-article blockquote {{ margin: 18px 0; padding: 10px 14px; background-color: #f3f7f5; border-left: 4px solid #8db7a3; }}
       .wx-article code {{ background-color: #f3f4f6; padding: 2px 4px; border-radius: 4px; }}
-      .wx-article pre {{ background-color: #f3f4f6; padding: 12px; border-radius: 6px; word-break: break-word; }}
+      .wx-article pre {{ background-color: #f3f4f6; padding: 12px; border-radius: 6px; }}
       .wx-article img {{ max-width: 100%; display: block; margin: 18px auto; }}
+      .wx-article ul, .wx-article ol {{ margin: 0 0 16px; padding-left: 24px; }}
+      .wx-article li {{ margin: 6px 0; }}
+      .wx-article a {{ color: #146b4c; }}
+      .wx-article hr {{ border: 0; border-bottom: 1px solid #d7dde4; margin: 24px 0; }}
       .wx-article table {{ width: 100%; border: 1px solid #d7dde4; border-radius: 6px; }}
       .wx-article th, .wx-article td {{ border-bottom: 1px solid #d7dde4; padding: 8px; }}
     </style>

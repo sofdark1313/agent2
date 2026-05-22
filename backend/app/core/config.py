@@ -8,8 +8,9 @@ class Settings(BaseSettings):
     app_env: str = "local"
     api_cors_origins: str = "http://localhost:5173"
     mysql_dsn: str = "mysql+pymysql://autopost:autopost@localhost:3306/autopost?charset=utf8mb4"
-    openai_api_key: str | None = None
-    openai_model: str = "gpt-5.2"
+    ai_base_url: str | None = None
+    ai_api_key: str | None = None
+    ai_model_name: str | None = None
     wechat_app_id: str | None = None
     wechat_app_secret: str | None = None
     wechat_auto_publish: bool = False

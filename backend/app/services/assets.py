@@ -14,6 +14,7 @@ async def upload_body_images(db: Session, article: Article) -> str:
     html = article.current_html or ""
     sources = extract_image_sources(html)
     replacements: dict[str, str] = {}
+    failures: list[str] = []
     for source in sources:
         if source.startswith("data:"):
             continue
@@ -30,8 +31,12 @@ async def upload_body_images(db: Session, article: Article) -> str:
         except Exception as exc:
             asset.status = "failed"
             asset.error = str(exc)
+            failures.append(f"{source}: {exc}")
         finally:
             db.flush()
+    if failures:
+        db.commit()
+        raise RuntimeError("正文图片上传微信失败：" + "；".join(failures[:3]))
     if replacements:
         article.current_html = replace_image_sources(html, replacements)
     db.commit()

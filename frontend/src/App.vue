@@ -4,18 +4,24 @@ import {
   CheckCircle2,
   FileText,
   Loader2,
+  Trash2,
   RefreshCw,
   Send,
   Settings,
   Upload,
 } from 'lucide-vue-next'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from './api'
-import type { Article, PublishJob, SettingsStatus } from './types'
+import type { Article, PublicSettings, PublishJob, SettingsStatus } from './types'
 
 const articles = ref<Article[]>([])
 const jobs = ref<PublishJob[]>([])
 const status = ref<SettingsStatus | null>(null)
+const appSettings = ref<PublicSettings>({
+  default_author: '',
+  wechat_account_name: '',
+  wechat_original_id: '',
+})
 const selectedArticleId = ref<number | null>(null)
 const markdown = ref('# 标题\n\n这里粘贴 Markdown 正文。')
 const markdownInstruction = ref('请润色成适合公众号发布的文章，保留原文事实。')
@@ -31,20 +37,30 @@ const coverFile = ref<File | null>(null)
 const activeTab = ref<'markdown' | 'topic'>('markdown')
 const loading = ref(false)
 const error = ref('')
+const aiTestMessage = ref('')
+const taskMessage = ref('')
+let pollTimer: number | undefined
 
 const selectedArticle = computed(() =>
   articles.value.find((article) => article.id === selectedArticleId.value) ?? articles.value[0] ?? null,
 )
+const hasGeneratingArticle = computed(() =>
+  articles.value.some((article) => article.status === 'generating'),
+)
 
 async function refreshAll() {
   error.value = ''
-  const [settingsResult, articleResult, jobResult] = await Promise.allSettled([
+  const [settingsResult, appSettingsResult, articleResult, jobResult] = await Promise.allSettled([
     api.status(),
+    api.appSettings(),
     api.articles(),
     api.jobs(),
   ])
   if (settingsResult.status === 'fulfilled') {
     status.value = settingsResult.value
+  }
+  if (appSettingsResult.status === 'fulfilled') {
+    appSettings.value = appSettingsResult.value
   }
   if (articleResult.status === 'fulfilled') {
     articles.value = articleResult.value
@@ -52,7 +68,7 @@ async function refreshAll() {
   if (jobResult.status === 'fulfilled') {
     jobs.value = jobResult.value
   }
-  const failures = [settingsResult, articleResult, jobResult].filter(
+  const failures = [settingsResult, appSettingsResult, articleResult, jobResult].filter(
     (result) => result.status === 'rejected',
   )
   if (failures.length > 0) {
@@ -87,6 +103,7 @@ async function createMarkdownArticle() {
       markdownTitle.value,
     )
     selectedArticleId.value = created.id
+    taskMessage.value = 'Markdown 已转换完成，可直接创建草稿。需要 AI 润色时，请点击右侧重新润色。'
   })
 }
 
@@ -94,6 +111,7 @@ async function createTopicArticle() {
   await runTask(async () => {
     const created = await api.createFromTopic(topic.value, audience.value, style.value, wordCount.value)
     selectedArticleId.value = created.id
+    taskMessage.value = '已提交生成任务，AI 正在后台处理。'
   })
 }
 
@@ -102,6 +120,7 @@ async function regenerate() {
   await runTask(async () => {
     const updated = await api.regenerate(selectedArticle.value!.id, regenerateInstruction.value)
     selectedArticleId.value = updated.id
+    taskMessage.value = '已提交重新润色任务，AI 正在后台处理。'
   })
 }
 
@@ -109,7 +128,11 @@ async function createDraft() {
   if (!selectedArticle.value) return
   await runTask(async () => {
     const job = await api.createDraft(selectedArticle.value!.id, thumbMediaId.value)
+    if (job.status === 'failed') {
+      throw new Error(job.error || '创建草稿失败')
+    }
     if (job.draft_media_id) draftMediaId.value = job.draft_media_id
+    taskMessage.value = '草稿创建成功。'
   })
 }
 
@@ -118,13 +141,52 @@ async function uploadCover() {
   await runTask(async () => {
     const asset = await api.uploadCover(coverFile.value!, selectedArticle.value?.id)
     if (asset.media_id) thumbMediaId.value = asset.media_id
+    taskMessage.value = '封面素材上传成功。'
   })
 }
 
 async function publishArticle() {
   if (!selectedArticle.value) return
   await runTask(async () => {
-    await api.publish(selectedArticle.value!.id, draftMediaId.value || undefined)
+    const job = await api.publish(selectedArticle.value!.id, draftMediaId.value || undefined)
+    if (job.status === 'failed') {
+      throw new Error(job.error || '自动发布失败')
+    }
+    taskMessage.value = '发布任务提交成功。'
+  })
+}
+
+async function testAi() {
+  await runTask(async () => {
+    const result = await api.testAi()
+    aiTestMessage.value = result.ok ? `AI 连通成功：${result.model}` : 'AI 连通失败'
+  })
+}
+
+async function saveSettings() {
+  await runTask(async () => {
+    appSettings.value = await api.saveAppSettings(appSettings.value)
+    taskMessage.value = '设置已保存。'
+  })
+}
+
+async function deleteArticle(articleId: number) {
+  if (!window.confirm('确定删除这篇文章？关联的发布任务和素材记录也会删除。')) return
+  await runTask(async () => {
+    await api.deleteArticle(articleId)
+    if (selectedArticleId.value === articleId) {
+      selectedArticleId.value = null
+    }
+    taskMessage.value = '文章已删除。'
+  })
+}
+
+async function formatSelectedArticle() {
+  if (!selectedArticle.value) return
+  await runTask(async () => {
+    const formatted = await api.formatArticle(selectedArticle.value!.id)
+    selectedArticleId.value = formatted.id
+    taskMessage.value = '文章已重新排版。'
   })
 }
 
@@ -134,6 +196,17 @@ function statusClass(value: boolean) {
 
 onMounted(() => {
   runTask(refreshAll)
+  pollTimer = window.setInterval(() => {
+    if (hasGeneratingArticle.value) {
+      refreshAll()
+    }
+  }, 3000)
+})
+
+onUnmounted(() => {
+  if (pollTimer) {
+    window.clearInterval(pollTimer)
+  }
 })
 </script>
 
@@ -153,11 +226,15 @@ onMounted(() => {
     <section class="status-strip" v-if="status">
       <div class="status-item">
         <Bot :size="18" />
-        <span>OpenAI</span>
-        <strong :class="statusClass(status.openai_configured)">
-          {{ status.openai_configured ? status.openai_model : '未配置' }}
+        <span>AI 模型</span>
+        <strong :class="statusClass(status.ai_configured)">
+          {{ status.ai_configured ? status.ai_model_name : '未配置' }}
         </strong>
       </div>
+      <button :disabled="loading || !status.ai_configured" @click="testAi">
+        <Bot :size="16" />
+        测试 AI
+      </button>
       <div class="status-item">
         <Settings :size="18" />
         <span>微信接口</span>
@@ -166,9 +243,13 @@ onMounted(() => {
         </strong>
       </div>
       <p>{{ status.wechat.message }}</p>
+      <p v-if="aiTestMessage">{{ aiTestMessage }}</p>
     </section>
 
     <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="taskMessage || hasGeneratingArticle" class="notice">
+      {{ hasGeneratingArticle ? 'AI 正在后台生成，页面会自动刷新。' : taskMessage }}
+    </p>
 
     <div class="workspace">
       <aside class="panel list-panel">
@@ -176,16 +257,20 @@ onMounted(() => {
           <FileText :size="18" />
           <span>文章</span>
         </div>
-        <button
+        <div
           v-for="article in articles"
           :key="article.id"
           class="article-row"
           :class="{ active: selectedArticle?.id === article.id }"
-          @click="selectedArticleId = article.id"
         >
-          <span>{{ article.title }}</span>
-          <small>{{ article.status }} · {{ article.source_type }}</small>
-        </button>
+          <button class="article-select" @click="selectedArticleId = article.id">
+            <span>{{ article.title }}</span>
+            <small>{{ article.status }} · {{ article.source_type }}</small>
+          </button>
+          <button class="icon-button small" title="删除文章" @click="deleteArticle(article.id)">
+            <Trash2 :size="15" />
+          </button>
+        </div>
         <p v-if="articles.length === 0" class="empty">还没有文章。</p>
       </aside>
 
@@ -204,10 +289,10 @@ onMounted(() => {
         <div v-if="activeTab === 'markdown'" class="form-grid">
           <label>
             标题
-            <input v-model="markdownTitle" placeholder="可留空，由 AI 生成" />
+            <input v-model="markdownTitle" placeholder="可留空，默认读取 Markdown 一级标题" />
           </label>
           <label>
-            AI 指令
+            可选润色指令
             <input v-model="markdownInstruction" />
           </label>
           <label class="wide">
@@ -215,8 +300,8 @@ onMounted(() => {
             <textarea v-model="markdown" rows="14" />
           </label>
           <button class="primary" :disabled="loading" @click="createMarkdownArticle">
-            <Bot :size="18" />
-            生成公众号文章
+            <Upload :size="18" />
+            转换为公众号文章
           </button>
         </div>
 
@@ -235,7 +320,7 @@ onMounted(() => {
           </label>
           <label>
             字数
-            <input v-model.number="wordCount" type="number" min="300" max="5000" />
+            <input v-model.number="wordCount" type="number" min="100" max="5000" />
           </label>
           <button class="primary" :disabled="loading || !topic" @click="createTopicArticle">
             <Bot :size="18" />
@@ -257,6 +342,27 @@ onMounted(() => {
 
       <section class="panel action-panel">
         <div class="panel-title">
+          <Settings :size="18" />
+          <span>账号设置</span>
+        </div>
+        <label>
+          默认作者
+          <input v-model="appSettings.default_author" placeholder="创建微信草稿时写入 author 字段" />
+        </label>
+        <label>
+          公众号名称
+          <input v-model="appSettings.wechat_account_name" placeholder="用于本地标记关联账号" />
+        </label>
+        <label>
+          原始 ID
+          <input v-model="appSettings.wechat_original_id" placeholder="例如 gh_xxxxx，可选" />
+        </label>
+        <button :disabled="loading" @click="saveSettings">
+          <Settings :size="18" />
+          保存设置
+        </button>
+
+        <div class="panel-title">
           <Send :size="18" />
           <span>发布</span>
         </div>
@@ -276,7 +382,7 @@ onMounted(() => {
           <Upload :size="18" />
           上传封面素材
         </button>
-        <button class="primary" :disabled="loading || !selectedArticle || !thumbMediaId" @click="createDraft">
+        <button class="primary" :disabled="loading || !selectedArticle" @click="createDraft">
           <CheckCircle2 :size="18" />
           创建草稿
         </button>
@@ -295,6 +401,10 @@ onMounted(() => {
         <button :disabled="loading || !selectedArticle" @click="regenerate">
           <RefreshCw :size="18" />
           重新润色
+        </button>
+        <button :disabled="loading || !selectedArticle" @click="formatSelectedArticle">
+          <RefreshCw :size="18" />
+          重新排版
         </button>
 
         <div class="jobs">

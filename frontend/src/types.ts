@@ -41,11 +41,19 @@ export type Asset = {
 }
 
 export type SettingsStatus = {
-  openai_configured: boolean
-  openai_model: string
+  ai_configured: boolean
+  ai_model_name?: string | null
+  ai_base_url_configured: boolean
+  account: PublicSettings
   wechat: {
     ok: boolean
     checks: Record<string, boolean>
     message: string
   }
+}
+
+export type PublicSettings = {
+  default_author: string
+  wechat_account_name: string
+  wechat_original_id: string
 }

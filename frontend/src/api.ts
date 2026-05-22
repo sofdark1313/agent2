@@ -1,4 +1,4 @@
-import type { Article, Asset, PublishJob, SettingsStatus } from './types'
+import type { Article, Asset, PublicSettings, PublishJob, SettingsStatus } from './types'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -7,15 +7,42 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   })
   if (!response.ok) {
     const text = await response.text()
-    throw new Error(text || response.statusText)
+    throw new Error(formatApiError(text, response.statusText))
   }
   return response.json() as Promise<T>
 }
 
+function formatApiError(text: string, fallback: string): string {
+  if (!text) return fallback
+  try {
+    const payload = JSON.parse(text)
+    if (typeof payload.detail === 'string') return payload.detail
+    if (Array.isArray(payload.detail)) {
+      return payload.detail
+        .map((item: { msg?: string }) => item.msg || JSON.stringify(item))
+        .join('\n')
+    }
+    return JSON.stringify(payload)
+  } catch {
+    return text
+  }
+}
+
 export const api = {
   status: () => request<SettingsStatus>('/api/settings/status'),
+  testAi: () => request<Record<string, unknown>>('/api/settings/ai/test'),
+  appSettings: () => request<PublicSettings>('/api/settings/app'),
+  saveAppSettings: (payload: PublicSettings) =>
+    request<PublicSettings>('/api/settings/app', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
   articles: () => request<Article[]>('/api/articles'),
   jobs: () => request<PublishJob[]>('/api/publish/jobs'),
+  deleteArticle: (articleId: number) =>
+    request<{ ok: boolean }>(`/api/articles/${articleId}`, { method: 'DELETE' }),
+  formatArticle: (articleId: number) =>
+    request<Article>(`/api/articles/${articleId}/format`, { method: 'POST' }),
   createFromMarkdown: (markdown: string, instruction: string, title?: string) =>
     request<Article>('/api/articles/from-markdown', {
       method: 'POST',
@@ -60,7 +87,7 @@ export const api = {
       body: form,
     })
     if (!response.ok) {
-      throw new Error((await response.text()) || response.statusText)
+      throw new Error(formatApiError(await response.text(), response.statusText))
     }
     return response.json() as Promise<Asset>
   },
