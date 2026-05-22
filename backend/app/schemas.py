@@ -14,7 +14,7 @@ class ArticleCreateFromTopic(BaseModel):
     topic: str
     audience: str | None = None
     style: str | None = None
-    word_count: int | None = Field(default=1200, ge=300, le=5000)
+    word_count: int | None = Field(default=1200, ge=100, le=5000)
 
 
 class ArticleGenerateRequest(BaseModel):
@@ -95,6 +95,12 @@ class PreflightOut(BaseModel):
     ok: bool
     checks: dict[str, bool]
     message: str
+
+
+class PublicSettingsOut(BaseModel):
+    default_author: str = ""
+    wechat_account_name: str = ""
+    wechat_original_id: str = ""
 
 
 class PublishRequest(BaseModel):

@@ -6,7 +6,7 @@
 
 - Backend: Python FastAPI, SQLAlchemy 2.x, Alembic, MySQL
 - Frontend: Vue 3, Vite, TypeScript
-- AI: OpenAI Responses API
+- AI: OpenAI-compatible Chat Completions API
 - WeChat: 公众号 access token、图文图片上传、永久素材、草稿箱、发布接口
 
 ## 快速开始
@@ -30,6 +30,36 @@ MYSQL_DSN=mysql+pymysql://autopost:autopost@<linux-ip>:3306/autopost?charset=utf
 ```
 
 同一台机器的 WSL2/Docker Desktop 通常可以先试 `localhost`；独立 Linux 虚拟机或服务器用它的局域网 IP。
+
+AI 模型只需要配置三个参数，适配提供 OpenAI 兼容接口的国产模型：
+
+```env
+AI_BASE_URL=https://your-provider.example.com/v1
+AI_API_KEY=your-api-key
+AI_MODEL_NAME=your-model-name
+```
+
+例如 DeepSeek 常见配置形态：
+
+```env
+AI_BASE_URL=https://api.deepseek.com/v1
+AI_API_KEY=sk-...
+AI_MODEL_NAME=deepseek-chat
+```
+
+例如 Moonshot/Kimi 常见配置形态：
+
+```env
+AI_BASE_URL=https://api.moonshot.cn/v1
+AI_API_KEY=sk-...
+AI_MODEL_NAME=kimi-k2.6
+```
+
+启动后可以用下面接口测试 AI 是否真的可用：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/settings/ai/test
+```
 
 3. 安装后端依赖并迁移数据库：
 
@@ -68,5 +98,4 @@ npm run dev
 - WeChat access token: https://developers.weixin.qq.com/doc/offiaccount/Basic_Information/Get_access_token.html
 - WeChat draft add: https://developers.weixin.qq.com/doc/offiaccount/Draft_Box/Add_draft.html
 - WeChat publish: https://developers.weixin.qq.com/doc/offiaccount/Publish/Publish.html
-- OpenAI Responses API: https://platform.openai.com/docs/api-reference/responses
-- OpenAI Structured Outputs: https://platform.openai.com/docs/guides/structured-outputs
+- OpenAI-compatible Chat Completions API: https://platform.openai.com/docs/api-reference/chat
