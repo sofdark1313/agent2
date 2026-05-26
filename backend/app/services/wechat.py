@@ -5,14 +5,16 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.core.exceptions import WeChatError
+from app.core.logging import get_logger
 
 WECHAT_API = "https://api.weixin.qq.com"
 
+logger = get_logger(__name__)
 
-class WeChatApiError(RuntimeError):
-    def __init__(self, message: str, payload: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.payload = payload or {}
+
+# 保留旧的异常名称以保持向后兼容
+WeChatApiError = WeChatError
 
 
 class WeChatClient:
@@ -34,6 +36,7 @@ class WeChatClient:
         try:
             await self.get_access_token()
         except Exception as exc:
+            logger.error(f"微信 token 获取失败: {exc}")
             return {"ok": False, "checks": checks, "message": f"微信 token 获取失败: {exc}"}
         return {"ok": True, "checks": checks, "message": "微信接口配置可用"}
 
@@ -41,7 +44,9 @@ class WeChatClient:
         if self._access_token and time.time() < self._expires_at - 300:
             return self._access_token
         if not self.is_configured():
-            raise WeChatApiError("微信 AppID/AppSecret 未配置")
+            raise WeChatError("微信 AppID/AppSecret 未配置")
+        
+        logger.info("正在获取微信 access_token")
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.get(
                 f"{WECHAT_API}/cgi-bin/token",
@@ -55,13 +60,15 @@ class WeChatClient:
         self._raise_for_wechat_error(payload)
         self._access_token = payload["access_token"]
         self._expires_at = time.time() + int(payload.get("expires_in", 7200))
+        logger.info("微信 access_token 获取成功")
         return self._access_token
 
     async def upload_article_image(self, image_path: str) -> str:
+        logger.info(f"上传正文图片: {image_path}")
         token = await self.get_access_token()
         path = Path(image_path)
         if not path.exists():
-            raise WeChatApiError(f"图片不存在: {image_path}")
+            raise WeChatError(f"图片不存在: {image_path}")
         async with httpx.AsyncClient(timeout=60) as client:
             with path.open("rb") as image:
                 response = await client.post(
@@ -71,13 +78,15 @@ class WeChatClient:
                 )
         payload = response.json()
         self._raise_for_wechat_error(payload)
+        logger.info(f"正文图片上传成功: {payload.get('url', '')[:50]}...")
         return payload["url"]
 
     async def upload_cover_material(self, image_path: str) -> str:
+        logger.info(f"上传封面素材: {image_path}")
         token = await self.get_access_token()
         path = Path(image_path)
         if not path.exists():
-            raise WeChatApiError(f"封面图片不存在: {image_path}")
+            raise WeChatError(f"封面图片不存在: {image_path}")
         async with httpx.AsyncClient(timeout=60) as client:
             with path.open("rb") as image:
                 response = await client.post(
@@ -87,7 +96,9 @@ class WeChatClient:
                 )
         payload = response.json()
         self._raise_for_wechat_error(payload)
-        return payload["media_id"]
+        media_id = payload["media_id"]
+        logger.info(f"封面素材上传成功: media_id={media_id}")
+        return media_id
 
     async def create_draft(
         self,
@@ -98,6 +109,7 @@ class WeChatClient:
         thumb_media_id: str,
         author: str | None = None,
     ) -> dict[str, Any]:
+        logger.info(f"创建草稿: title={title}")
         token = await self.get_access_token()
         payload = {
             "articles": [
@@ -121,9 +133,11 @@ class WeChatClient:
             )
         result = response.json()
         self._raise_for_wechat_error(result)
+        logger.info(f"草稿创建成功: media_id={result.get('media_id')}")
         return result
 
     async def publish(self, media_id: str) -> dict[str, Any]:
+        logger.info(f"提交发布: media_id={media_id}")
         token = await self.get_access_token()
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
@@ -133,9 +147,11 @@ class WeChatClient:
             )
         result = response.json()
         self._raise_for_wechat_error(result)
+        logger.info(f"发布提交成功: publish_id={result.get('publish_id')}")
         return result
 
     async def get_publish_status(self, publish_id: str) -> dict[str, Any]:
+        logger.debug(f"查询发布状态: publish_id={publish_id}")
         token = await self.get_access_token()
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
@@ -145,13 +161,15 @@ class WeChatClient:
             )
         result = response.json()
         self._raise_for_wechat_error(result)
+        logger.debug(f"发布状态: publish_status={result.get('publish_status')}")
         return result
 
     def _raise_for_wechat_error(self, payload: dict[str, Any]) -> None:
         errcode = payload.get("errcode")
         if errcode not in (None, 0):
             errmsg = payload.get("errmsg", "unknown wechat error")
-            raise WeChatApiError(f"微信接口错误 {errcode}: {errmsg}", payload)
+            logger.error(f"微信接口错误 {errcode}: {errmsg}")
+            raise WeChatError(f"微信接口错误 {errcode}: {errmsg}", payload)
 
 
 wechat_client = WeChatClient()
