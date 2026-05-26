@@ -47,6 +47,72 @@ const selectedArticle = computed(() =>
 const hasGeneratingArticle = computed(() =>
   articles.value.some((article) => article.status === 'generating'),
 )
+const hasPublishingArticle = computed(() =>
+  articles.value.some((article) => article.status === 'publishing'),
+)
+const needsAutoRefresh = computed(() => hasGeneratingArticle.value || hasPublishingArticle.value)
+const liveStatusMessage = computed(() => {
+  if (hasGeneratingArticle.value && hasPublishingArticle.value) {
+    return 'AI 正在生成、文章正在发布，页面会自动刷新。'
+  }
+  if (hasGeneratingArticle.value) return 'AI 正在后台生成，页面会自动刷新。'
+  if (hasPublishingArticle.value) return '发布已提交微信，页面会自动查询发布结果。'
+  return ''
+})
+
+const articleReadyForPublish = computed(() => {
+  const a = selectedArticle.value
+  if (!a) return false
+  return ['generated', 'draft_created', 'publish_failed', 'published'].includes(a.status)
+})
+const canManualPublish = computed(
+  () => articleReadyForPublish.value && !!draftMediaId.value.trim(),
+)
+const canAutoPublish = computed(
+  () =>
+    articleReadyForPublish.value &&
+    (coverFile.value !== null || !!thumbMediaId.value.trim() || hasUploadedCover.value),
+)
+const hasUploadedCover = computed(() => {
+  // 已有 thumb_media_id 或文章关联了 uploaded 封面 asset
+  return !!thumbMediaId.value.trim()
+})
+const autoPublishHint = computed(() => {
+  if (!selectedArticle.value) return '请先选择或创建文章'
+  if (!articleReadyForPublish.value) {
+    return `当前文章状态「${selectedArticle.value.status}」不能发布，请等待生成完成或先重新润色`
+  }
+  if (!canAutoPublish.value) {
+    return '请先选择封面文件或填写已有的 thumb_media_id'
+  }
+  return '一键执行：上传封面 → 创建草稿 → 提交发布'
+})
+
+const ACTION_LABELS: Record<string, string> = {
+  upload_cover: '上传封面',
+  create_draft: '创建草稿',
+  publish: '提交发布',
+  poll_publish: '查询发布状态',
+}
+const STATUS_LABELS: Record<string, string> = {
+  pending: '待处理',
+  running: '进行中',
+  publishing: '发布中',
+  succeeded: '成功',
+  failed: '失败',
+}
+function jobActionLabel(action: string): string {
+  return ACTION_LABELS[action] ?? action
+}
+function jobStatusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? status
+}
+function jobMeta(job: PublishJob): string {
+  if (job.error) return job.error
+  if (job.publish_id) return `publish_id: ${job.publish_id}`
+  if (job.draft_media_id) return `draft_media_id: ${job.draft_media_id}`
+  return new Date(job.created_at).toLocaleString()
+}
 
 async function refreshAll() {
   error.value = ''
@@ -156,6 +222,34 @@ async function publishArticle() {
   })
 }
 
+async function autoPublish() {
+  if (!selectedArticle.value) return
+  await runTask(async () => {
+    const result = await api.runAutoPublish(selectedArticle.value!.id, {
+      thumbMediaId: thumbMediaId.value || undefined,
+      coverFile: coverFile.value,
+    })
+    if (result.error) {
+      throw new Error(`一键发布在「${result.stage}」阶段失败：${result.error}`)
+    }
+    if (result.cover_asset?.media_id) thumbMediaId.value = result.cover_asset.media_id
+    if (result.draft_job?.draft_media_id) draftMediaId.value = result.draft_job.draft_media_id
+    taskMessage.value =
+      result.stage === 'completed'
+        ? '一键发布已提交，请稍候轮询查看真实发布状态。'
+        : `一键发布已推进至「${result.stage}」阶段。`
+  })
+}
+
+async function pollPublishingJobs() {
+  try {
+    await api.pollAllPublishingJobs()
+  } catch (err) {
+    // 轮询失败不打扰主流程,仅记录到 error 区
+    error.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 async function testAi() {
   await runTask(async () => {
     const result = await api.testAi()
@@ -196,10 +290,14 @@ function statusClass(value: boolean) {
 
 onMounted(() => {
   runTask(refreshAll)
-  pollTimer = window.setInterval(() => {
-    if (hasGeneratingArticle.value) {
-      refreshAll()
+  pollTimer = window.setInterval(async () => {
+    if (!needsAutoRefresh.value) return
+    if (hasPublishingArticle.value) {
+      // 文章在 publishing 状态时,主动让后端去查 freepublish/get
+      // 失败不打扰主流程
+      await pollPublishingJobs()
     }
+    await refreshAll()
   }, 3000)
 })
 
@@ -247,8 +345,8 @@ onUnmounted(() => {
     </section>
 
     <p v-if="error" class="error">{{ error }}</p>
-    <p v-if="taskMessage || hasGeneratingArticle" class="notice">
-      {{ hasGeneratingArticle ? 'AI 正在后台生成，页面会自动刷新。' : taskMessage }}
+    <p v-if="taskMessage || liveStatusMessage" class="notice">
+      {{ liveStatusMessage || taskMessage }}
     </p>
 
     <div class="workspace">
@@ -366,10 +464,12 @@ onUnmounted(() => {
           <Send :size="18" />
           <span>发布</span>
         </div>
-        <label>
-          封面 thumb_media_id
-          <input v-model="thumbMediaId" placeholder="先在公众号素材接口上传封面，填入 media_id" />
-        </label>
+
+        <div class="hint">
+          流程：上传封面 → 创建草稿 → 自动发布。
+          也可点「一键发布」一次完成全部步骤。
+        </div>
+
         <label>
           上传封面
           <input
@@ -377,6 +477,10 @@ onUnmounted(() => {
             accept="image/*"
             @change="coverFile = ($event.target as HTMLInputElement).files?.[0] || null"
           />
+        </label>
+        <label>
+          已有封面 thumb_media_id（可选）
+          <input v-model="thumbMediaId" placeholder="复用已上传过的封面素材时填写" />
         </label>
         <button :disabled="loading || !coverFile" @click="uploadCover">
           <Upload :size="18" />
@@ -390,9 +494,23 @@ onUnmounted(() => {
           草稿 media_id
           <input v-model="draftMediaId" placeholder="创建草稿后自动填入，也可手动填写" />
         </label>
-        <button class="danger" :disabled="loading || !selectedArticle" @click="publishArticle">
+        <button
+          class="danger"
+          :disabled="loading || !selectedArticle || !canManualPublish"
+          @click="publishArticle"
+          :title="canManualPublish ? '基于已有草稿提交发布' : '请先创建草稿，才能提交发布'"
+        >
           <Send :size="18" />
-          自动发布
+          提交发布
+        </button>
+        <button
+          class="primary one-click"
+          :disabled="loading || !canAutoPublish"
+          @click="autoPublish"
+          :title="autoPublishHint"
+        >
+          <Send :size="18" />
+          一键发布（封面 → 草稿 → 发布）
         </button>
         <label>
           再生成指令
@@ -410,9 +528,9 @@ onUnmounted(() => {
         <div class="jobs">
           <h3>任务日志</h3>
           <div v-for="job in jobs.slice(0, 8)" :key="job.id" class="job-row">
-            <span>{{ job.action }}</span>
-            <strong :class="job.status">{{ job.status }}</strong>
-            <small>{{ job.error || job.draft_media_id || job.publish_id }}</small>
+            <span class="job-action">{{ jobActionLabel(job.action) }}</span>
+            <strong :class="job.status">{{ jobStatusLabel(job.status) }}</strong>
+            <small>{{ jobMeta(job) }}</small>
           </div>
           <p v-if="jobs.length === 0" class="empty">暂无发布任务。</p>
         </div>

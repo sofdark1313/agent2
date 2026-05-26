@@ -3,11 +3,31 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.logging import get_logger
 from app.models import Article, Asset
 from app.services.content import extract_image_sources, replace_image_sources
 from app.services.wechat import wechat_client
+
+logger = get_logger(__name__)
+
+
+def _find_uploaded_body_image(
+    db: Session, article_id: int, source_url: str
+) -> Asset | None:
+    return db.scalars(
+        select(Asset)
+        .where(
+            Asset.article_id == article_id,
+            Asset.asset_type == "body_image",
+            Asset.source_url == source_url,
+            Asset.status == "uploaded",
+            Asset.wechat_url.is_not(None),
+        )
+        .order_by(Asset.created_at.desc())
+    ).first()
 
 
 async def upload_body_images(db: Session, article: Article) -> str:
@@ -15,9 +35,17 @@ async def upload_body_images(db: Session, article: Article) -> str:
     sources = extract_image_sources(html)
     replacements: dict[str, str] = {}
     failures: list[str] = []
+    reused = 0
     for source in sources:
         if source.startswith("data:"):
             continue
+
+        cached = _find_uploaded_body_image(db, article.id, source)
+        if cached and cached.wechat_url:
+            replacements[source] = cached.wechat_url
+            reused += 1
+            continue
+
         asset = Asset(article_id=article.id, source_url=source, asset_type="body_image", status="pending")
         db.add(asset)
         db.flush()
@@ -34,12 +62,17 @@ async def upload_body_images(db: Session, article: Article) -> str:
             failures.append(f"{source}: {exc}")
         finally:
             db.flush()
-    if failures:
-        db.commit()
-        raise RuntimeError("正文图片上传微信失败：" + "；".join(failures[:3]))
+
+    if reused:
+        logger.info(f"复用已上传的正文图片: article_id={article.id}, count={reused}")
+
     if replacements:
         article.current_html = replace_image_sources(html, replacements)
     db.commit()
+
+    if failures:
+        raise RuntimeError("正文图片上传微信失败：" + "；".join(failures[:3]))
+
     return article.current_html or html
 
 

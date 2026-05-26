@@ -6,8 +6,13 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.core.exceptions import AiProviderError
+from app.core.logging import get_logger
+from app.core.utils import guess_title_from_markdown
 from app.schemas import AiArticleResult
 from app.services.content import apply_wechat_style, markdown_to_html, sanitize_html
+
+logger = get_logger(__name__)
 
 ARTICLE_SCHEMA_HINT = (
     '{"title":"文章标题","digest":"120字以内摘要","html":"正文HTML",'
@@ -27,6 +32,7 @@ class AiService:
     def test_connection(self) -> dict[str, Any]:
         if not self.is_configured():
             raise AiProviderError("AI 未配置，请填写 AI_BASE_URL、AI_API_KEY、AI_MODEL_NAME。")
+        logger.info(f"测试 AI 连接: base_url={self.base_url}, model={self.model_name}")
         content = self._chat_completion(
             "请只返回一个 JSON 对象：{\"title\":\"连通性测试\",\"digest\":\"ok\",\"html\":\"<p>ok</p>\",\"cover_prompt\":null,\"tags\":[\"test\"]}",
             use_response_format=True,
@@ -34,6 +40,7 @@ class AiService:
             max_tokens=300,
         )
         parsed = _parse_json_object(content)
+        logger.info("AI 连接测试成功")
         return {
             "ok": True,
             "model": self.model_name,
@@ -67,8 +74,9 @@ Markdown:
         try:
             return self._create_article(prompt, max_tokens=1200, timeout=45)
         except AiProviderError:
+            logger.warning("AI 润色超时，使用本地 Markdown 转换结果")
             return AiArticleResult(
-                title=_guess_title_from_markdown(markdown),
+                title=guess_title_from_markdown(markdown),
                 digest="AI 润色超时，已保留本地 Markdown 转换结果。",
                 html=fallback_html,
                 cover_prompt=None,
@@ -99,8 +107,9 @@ Markdown 开头：
                 tags=metadata.tags,
             )
         except AiProviderError:
+            logger.warning("长文章 AI 润色超时，使用本地 Markdown 转换结果")
             return AiArticleResult(
-                title=_guess_title_from_markdown(markdown),
+                title=guess_title_from_markdown(markdown),
                 digest="AI 润色超时，已保留本地 Markdown 转换结果。",
                 html=fallback_html,
                 cover_prompt=None,
@@ -138,14 +147,18 @@ Markdown 开头：
         return self._create_article(prompt, max_tokens=token_budget, timeout=90)
 
     def _create_article(self, prompt: str, *, max_tokens: int, timeout: int) -> AiArticleResult:
+        logger.debug(f"调用 AI 生成文章: max_tokens={max_tokens}, timeout={timeout}")
         raw = self._chat_completion(
             prompt, use_response_format=True, timeout=timeout, max_tokens=max_tokens
         )
         try:
             payload = _parse_json_object(raw)
             payload["html"] = apply_wechat_style(sanitize_html(payload["html"]))
-            return AiArticleResult.model_validate(payload)
+            result = AiArticleResult.model_validate(payload)
+            logger.debug(f"AI 生成文章成功: title={result.title}")
+            return result
         except (KeyError, json.JSONDecodeError, ValidationError) as exc:
+            logger.error(f"AI 返回内容无法解析: {raw[:300]}")
             raise AiProviderError(
                 f"AI 返回内容无法解析，请检查模型是否按 JSON 输出。原始返回片段: {raw[:300]}"
             ) from exc
@@ -190,18 +203,22 @@ Markdown 开头：
             with httpx.Client(timeout=timeout) as client:
                 response = client.post(url, headers=headers, json=payload)
         except httpx.RequestError as exc:
+            logger.error(f"AI 服务连接失败: {exc}")
             raise AiProviderError(f"AI 服务连接失败，请检查 AI_BASE_URL: {exc}") from exc
 
         if response.status_code == 400 and "response_format" in payload:
+            logger.warning("AI 不支持 response_format，尝试不带该参数重试")
             fallback_payload = dict(payload)
             fallback_payload.pop("response_format", None)
             return self._post_chat_completion(fallback_payload, timeout=timeout)
 
         if response.status_code == 401:
+            logger.error("AI API Key 无效或无权限")
             raise AiProviderError("AI API Key 无效或无权限，请检查 AI_API_KEY。")
 
         if response.status_code >= 400:
             detail = _extract_error_message(response)
+            logger.error(f"AI 请求失败 HTTP {response.status_code}: {detail}")
             raise AiProviderError(
                 f"AI 请求失败 HTTP {response.status_code}，请检查 AI_BASE_URL、AI_MODEL_NAME 和账号权限: {detail}"
             )
@@ -209,6 +226,7 @@ Markdown 开头：
         try:
             return response.json()
         except json.JSONDecodeError as exc:
+            logger.error(f"AI 服务返回的不是 JSON: {response.text[:300]}")
             raise AiProviderError(f"AI 服务返回的不是 JSON: {response.text[:300]}") from exc
 
     def _chat_completions_url(self) -> str:
@@ -272,17 +290,3 @@ def _parse_json_object(raw: str) -> dict[str, Any]:
         if not match:
             raise
         return json.loads(match.group(0))
-
-
-def _guess_title_from_markdown(markdown: str) -> str:
-    for line in markdown.splitlines():
-        text = line.strip()
-        if text.startswith("#"):
-            return text.lstrip("#").strip()[:100] or "Markdown 文章"
-        if text:
-            return text[:100]
-    return "Markdown 文章"
-
-
-class AiProviderError(RuntimeError):
-    pass

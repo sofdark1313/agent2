@@ -1,5 +1,21 @@
 import type { Article, Asset, PublicSettings, PublishJob, SettingsStatus } from './types'
 
+export type PublishPipelineResult = {
+  cover_asset: Asset | null
+  draft_job: PublishJob | null
+  publish_job: PublishJob | null
+  error: string | null
+  stage: string
+}
+
+type Paginated<T> = {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: { 'Content-Type': 'application/json', ...(options?.headers ?? {}) },
@@ -37,8 +53,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
-  articles: () => request<Article[]>('/api/articles'),
-  jobs: () => request<PublishJob[]>('/api/publish/jobs'),
+  articles: async () => {
+    const res = await request<Paginated<Article> | Article[]>('/api/articles')
+    return Array.isArray(res) ? res : res.items
+  },
+  jobs: async () => {
+    const res = await request<Paginated<PublishJob> | PublishJob[]>('/api/publish/jobs')
+    return Array.isArray(res) ? res : res.items
+  },
   deleteArticle: (articleId: number) =>
     request<{ ok: boolean }>(`/api/articles/${articleId}`, { method: 'DELETE' }),
   formatArticle: (articleId: number) =>
@@ -91,4 +113,30 @@ export const api = {
     }
     return response.json() as Promise<Asset>
   },
+  runAutoPublish: async (
+    articleId: number,
+    opts: { thumbMediaId?: string; coverFile?: File | null } = {},
+  ) => {
+    const url = `/api/publish/articles/${articleId}/pipeline`
+    if (opts.coverFile) {
+      const form = new FormData()
+      form.append('file', opts.coverFile)
+      if (opts.thumbMediaId) {
+        form.append('payload', JSON.stringify({ thumb_media_id: opts.thumbMediaId }))
+      }
+      const response = await fetch(url, { method: 'POST', body: form })
+      if (!response.ok) {
+        throw new Error(formatApiError(await response.text(), response.statusText))
+      }
+      return response.json() as Promise<PublishPipelineResult>
+    }
+    return request<PublishPipelineResult>(url, {
+      method: 'POST',
+      body: JSON.stringify({ thumb_media_id: opts.thumbMediaId || null }),
+    })
+  },
+  pollPublishJob: (jobId: number) =>
+    request<PublishJob>(`/api/publish/jobs/${jobId}/poll`, { method: 'POST' }),
+  pollAllPublishingJobs: () =>
+    request<PublishJob[]>('/api/publish/jobs/poll-all', { method: 'POST' }),
 }
